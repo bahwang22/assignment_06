@@ -1,7 +1,48 @@
-Write your reflection here.
+This assignment made the extract/transform split from lesson 4-2 concrete instead of abstract. 
+In Assignment 04 I just called an API and used the response; here, sentiment_step and entities_step 
+have to check os.path.exists(cache_file) before touching the network, and the first time I ran explore.py 
+without that check in place I burned several calls against my 150/day rate limit just re-running the same 
+five test reviews while debugging sentences_table. Once caching was in, I understood why the docstring keeps 
+repeating it: the extract step is the only part that can fail because of the network, so isolating it means 
+I can rerun the transform steps — the json_normalize calls — as many times as I want for free.
 
-See reflection.md for what makes a good reflection — be specific, use the
-terminology from this assignment (REST API, endpoint, HTTP status code,
-raise_for_status, API key, form data vs. JSON body, rate limit, caching,
-json_normalize, record_path, meta, grain, opinion mining, named-entity
-recognition, prompt, system prompt, reasoning model), and make it actionable.
+
+raise_for_status() caught a real bug for me, not a hypothetical one. I had classify_mentions sending its body 
+with data=body instead of json=body at first, and the request didn't throw a Python exception — it came back 
+as a 4xx that I only noticed because raise_for_status() turned it into a traceback pointing at the classify_mentions 
+call itself. Without it, I'd have gotten a KeyError three functions later in subjects_step when answers[mention] 
+didn't exist, with no obvious link back to the real cause. That's the distinction between form data and a JSON body 
+that the docstrings kept emphasizing — get_sentiment/get_entities want data=, but classify_mentions and ask_llm need 
+json= because the endpoint expects a structured body, not form fields.
+
+
+json_normalize with record_path and meta clicked once I saw it change the grain of the table each time. sentences_table 
+goes from one row per review to one row per sentence; entities_table goes from one row per review to one row per entity. 
+The part I didn't get right away was that meta=["review_id"] is what lets the parent review's id survive the explosion 
+— without it every sentence row would be anonymous. opinions_table was harder because it's not a flat explosion: a 
+target's opinion words live in a separate assessments list and are only connected through relations, where the ref 
+string ("#/documents/0/sentences/1/assessments/0") has to be parsed by splitting on / and taking the last piece as an 
+index. That's past what one json_normalize call can do, which is why it needed the nested loop instead.
+
+
+The opinion-mining vs. named-entity-recognition split in entity_mentions took me a while to see the point of. My first 
+instinct was "why not just use the entities table for everything" — but opinion mining gives you a sentiment tied directly 
+to a target ("the mocha latte was overpriced" → negative), while NER only tells you "Otto" is a Person with no sentiment 
+of its own. entity_mentions has to borrow the sentence's sentiment instead, and then has to avoid double-counting anything 
+opinion mining already caught in the same sentence (the is_covered substring check for things like "oat milk" inside "oat 
+milk cortado"). That dedup logic is subtle — it's comparing lowercased text containment, not equality, which I initially 
+got wrong by checking only for exact matches.
+
+
+Building the Q&A box's prompt was the first time I really felt the "give each tool the job it's good at" idea. 
+build_messages does all the counting in pandas (summarize_items, positive/negative/neutral totals) before anything 
+goes to the LLM, and the system prompt explicitly tells the reasoning model to trust those counts rather than reason 
+over the raw sentences. I originally tried to let the model count mentions from the evidence sentences directly, and 
+the answers were inconsistent run to run — which is exactly the failure mode the docstring warns about ("language 
+models are bad at counting and good at prose").
+
+
+Next, I want more practice reading Azure's relation/offset structures without the walkthrough — tracing ref strings 
+and offset-containment logic by hand until it's automatic instead of something I have to re-derive from the docstring 
+each time. I'd also like to re-run the Q&A box with deliberately ambiguous questions (ones naming no item/subject/
+location) to build intuition for how question_scope and evidence_for degrade gracefully to "all reviews."
